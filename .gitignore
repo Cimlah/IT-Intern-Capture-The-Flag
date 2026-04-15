@@ -2,10 +2,9 @@
 secrets/*
 !secrets/.gitkeep
 
-# Per-instance state + auto-generated compose overlay
+# Per-instance state
 state/*
 !state/.gitkeep
-docker-compose.override.yml
 
 # Node / Ink app build artifacts
 **/node_modules/

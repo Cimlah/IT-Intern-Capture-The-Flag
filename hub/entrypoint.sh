@@ -35,13 +35,19 @@ install -d -o intern -g intern -m 0755 /var/ctf/state
 # Ensure intern's home has a solutions/ dir for task 04 write-ups
 install -d -o intern -g intern -m 0755 /home/intern/solutions
 
-# Point the hub at the internal DNS server for the internal.ctf zone.
-# task06-dns listens at 10.42.0.23; prepend it so dig + getent hit it first.
-if [ -n "${CTF_DNS_SERVER:-}" ]; then
-  if ! grep -q "nameserver ${CTF_DNS_SERVER}" /etc/resolv.conf 2>/dev/null; then
-    printf 'nameserver %s\n%s\n' "${CTF_DNS_SERVER}" "$(cat /etc/resolv.conf 2>/dev/null || true)" > /etc/resolv.conf.new 2>/dev/null || true
-    mv /etc/resolv.conf.new /etc/resolv.conf 2>/dev/null || true
-  fi
+# Point the hub at task06-dns for the internal.ctf zone. Subnets are
+# auto-allocated by Docker per instance, so we can't hardcode an IP — resolve
+# the `venus` alias via Docker's embedded DNS (127.0.0.11) and prepend that IP
+# to /etc/resolv.conf so `dig TXT foo.internal.ctf` hits dnsmasq first.
+_dns_ip=""
+for _i in 1 2 3 4 5; do
+  _dns_ip=$(getent hosts venus 2>/dev/null | awk '{print $1; exit}')
+  [ -n "$_dns_ip" ] && break
+  sleep 0.5
+done
+if [ -n "$_dns_ip" ] && ! grep -q "nameserver $_dns_ip" /etc/resolv.conf 2>/dev/null; then
+  printf 'nameserver %s\n%s\n' "$_dns_ip" "$(cat /etc/resolv.conf 2>/dev/null || true)" > /etc/resolv.conf.new 2>/dev/null || true
+  mv /etc/resolv.conf.new /etc/resolv.conf 2>/dev/null || true
 fi
 
 mkdir -p /run/sshd
