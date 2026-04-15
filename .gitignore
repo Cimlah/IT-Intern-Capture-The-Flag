@@ -1,0 +1,30 @@
+# Secrets — default-deny everything in secrets/, allow only the placeholder.
+secrets/*
+!secrets/.gitkeep
+
+# Per-instance state + auto-generated compose overlay
+state/*
+!state/.gitkeep
+docker-compose.override.yml
+
+# Node / Ink app build artifacts
+**/node_modules/
+hub/app/dist/
+*.tsbuildinfo
+
+# Python bytecode (task08 api)
+__pycache__/
+*.py[co]
+
+# Logs
+*.log
+
+# Editor / OS noise
+.claude/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

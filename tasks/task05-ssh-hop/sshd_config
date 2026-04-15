@@ -1,0 +1,13 @@
+Port 22
+AddressFamily inet
+ListenAddress 0.0.0.0
+
+PermitRootLogin no
+PasswordAuthentication yes
+PermitEmptyPasswords no
+AllowUsers pivot
+
+UsePAM no
+PrintMotd no
+PrintLastLog no
+Subsystem sftp /usr/lib/ssh/sftp-server
