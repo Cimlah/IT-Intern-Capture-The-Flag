@@ -1,20 +1,38 @@
 #!/usr/bin/env bash
-# End-to-end smoke test. Run after ./spin-up.sh. Exits non-zero on any failure.
+# End-to-end smoke test for one CTF instance.
+#
+# Usage: ./smoke-test.sh [<instance-name>]
+#
+# Defaults to instance "default". Exits non-zero on any failure.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO_ROOT"
+
+INSTANCE="${1:-default}"
+SECRETS_DIR="$REPO_ROOT/secrets/$INSTANCE"
+OVERRIDE_FILE="$SECRETS_DIR/override.yml"
+
+if [ ! -f "$SECRETS_DIR/hub.env" ]; then
+  echo "ERROR: $SECRETS_DIR/hub.env not found. Did you run ./spin-up.sh $INSTANCE?" >&2
+  exit 2
+fi
+if [ -f "$SECRETS_DIR/.instance.env" ]; then
+  # shellcheck disable=SC1090
+  . "$SECRETS_DIR/.instance.env"
+fi
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ctf-$INSTANCE}"
+export CTF_SECRETS_DIR="$SECRETS_DIR"
+export CTF_SSH_PORT="${CTF_SSH_PORT:-2222}"
+
+COMPOSE=(docker compose -f docker-compose.yml -f "$OVERRIDE_FILE")
 
 PASS=0
 FAIL=0
 _pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; PASS=$((PASS + 1)); }
 _fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
-echo "== reading flags from secrets/hub.env"
-if [ ! -f secrets/hub.env ]; then
-  echo "ERROR: secrets/hub.env not found. Did you run ./spin-up.sh?" >&2
-  exit 2
-fi
+echo "== reading flags from $SECRETS_DIR/hub.env"
 # hub.env stores raw KEY=value lines (values may contain spaces, quotes, etc.).
 # Parse it manually instead of `source`ing it — bash source would try to
 # execute any value containing whitespace as a command.
@@ -27,10 +45,10 @@ while IFS= read -r _line || [ -n "$_line" ]; do
   case "$_k" in
     [A-Za-z_]*[A-Za-z0-9_]) export "$_k=$_v" ;;
   esac
-done < secrets/hub.env
+done < "$SECRETS_DIR/hub.env"
 
-echo "== docker compose ps"
-_running_count=$(docker compose ps --format json 2>/dev/null | grep -c '"State":"running"' || true)
+echo "== docker compose ps (project=$COMPOSE_PROJECT_NAME)"
+_running_count=$("${COMPOSE[@]}" ps --format json 2>/dev/null | grep -c '"State":"running"' || true)
 if [ "$_running_count" -ge 10 ]; then
   _pass "at least 10 services running ($_running_count)"
 else
@@ -39,11 +57,11 @@ fi
 
 echo "== hub can reach task containers"
 _decoy_list=""
-if [ -f secrets/decoys.env ]; then
-  _decoy_list=$(grep '^DECOY_NAMES=' secrets/decoys.env | cut -d= -f2- | tr ',' ' ')
+if [ -f "$SECRETS_DIR/decoys.env" ]; then
+  _decoy_list=$(grep '^DECOY_NAMES=' "$SECRETS_DIR/decoys.env" | cut -d= -f2- | tr ',' ' ')
 fi
 for host in mercury mars-hop venus earth-logs jupiter-api saturn-crypto neptune-final $_decoy_list; do
-  if docker compose exec -T hub getent hosts "$host" >/dev/null 2>&1; then
+  if "${COMPOSE[@]}" exec -T hub getent hosts "$host" >/dev/null 2>&1; then
     _pass "hub resolves $host"
   else
     _fail "hub cannot resolve $host"
@@ -51,7 +69,7 @@ for host in mercury mars-hop venus earth-logs jupiter-api saturn-crypto neptune-
 done
 
 echo "== task02/03: HTTP on mercury:$FLAG_TASK02"
-_body=$(docker compose exec -T hub curl -sf "http://mercury:${FLAG_TASK02}/" || true)
+_body=$("${COMPOSE[@]}" exec -T hub curl -sf "http://mercury:${FLAG_TASK02}/" || true)
 if [ "$_body" = "$FLAG_TASK03" ]; then
   _pass "mercury returns the expected base64"
 else
@@ -67,12 +85,12 @@ else
 fi
 
 echo "== task05: SSH hop into mars-hop as pivot"
-_ssh_pass=$(grep '^FLAG_TASK05_SSH_PASS=' secrets/task05.env | cut -d= -f2-)
-if docker compose exec -T hub sshpass -p "$_ssh_pass" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null pivot@mars-hop cat /home/pivot/flag.txt 2>/dev/null | tr -d '\r\n' | grep -q "^${FLAG_TASK05}$"; then
+_ssh_pass=$(grep '^FLAG_TASK05_SSH_PASS=' "$SECRETS_DIR/task05.env" | cut -d= -f2-)
+if "${COMPOSE[@]}" exec -T hub sshpass -p "$_ssh_pass" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null pivot@mars-hop cat /home/pivot/flag.txt 2>/dev/null | tr -d '\r\n' | grep -q "^${FLAG_TASK05}$"; then
   _pass "pivot flag file matches"
 else
   # sshpass may not be installed — fall back to scripted expect via python
-  _remote_flag=$(docker compose exec -T hub python3 - "$_ssh_pass" <<'PY' 2>/dev/null || true
+  _remote_flag=$("${COMPOSE[@]}" exec -T hub python3 - "$_ssh_pass" <<'PY' 2>/dev/null || true
 import sys, pty, os, subprocess, time
 pw = sys.argv[1]
 pid, fd = pty.fork()
@@ -108,8 +126,8 @@ PY
 fi
 
 echo "== task06: DNS TXT lookup"
-_host=$(grep '^FLAG_TASK06_HOST=' secrets/hub.env | cut -d= -f2-)
-_txt=$(docker compose exec -T hub dig @10.42.0.23 TXT "$_host" +short 2>/dev/null | tr -d '"' | tr -d '\r\n' | head -n1 || true)
+_host=$(grep '^FLAG_TASK06_HOST=' "$SECRETS_DIR/hub.env" | cut -d= -f2-)
+_txt=$("${COMPOSE[@]}" exec -T hub dig @venus TXT "$_host" +short 2>/dev/null | tr -d '"' | tr -d '\r\n' | head -n1 || true)
 if [ "$_txt" = "$FLAG_TASK06" ]; then
   _pass "dns TXT matches"
 else
@@ -121,7 +139,7 @@ echo "== task07: log file contains the TX id"
 # `set -o pipefail`: grep -q exits on first match, curl gets SIGPIPE while
 # it still has ~1.5 MB of log left to stream, and pipefail reports the
 # pipeline as failed even though the match succeeded.
-_access_log=$(docker compose exec -T hub curl -sf http://earth-logs/access.log 2>/dev/null || true)
+_access_log=$("${COMPOSE[@]}" exec -T hub curl -sf http://earth-logs/access.log 2>/dev/null || true)
 if [[ "$_access_log" == *"$FLAG_TASK07"* ]]; then
   _pass "access.log contains $FLAG_TASK07"
 else
@@ -130,8 +148,8 @@ fi
 unset _access_log
 
 echo "== task08: authenticated API call"
-_auth=$(grep '^FLAG_TASK08_AUTH_TOKEN=' secrets/task08.env | cut -d= -f2-)
-_api=$(docker compose exec -T hub curl -sf -H "X-Auth-Token: $_auth" http://jupiter-api:8080/vault 2>/dev/null || true)
+_auth=$(grep '^FLAG_TASK08_AUTH_TOKEN=' "$SECRETS_DIR/task08.env" | cut -d= -f2-)
+_api=$("${COMPOSE[@]}" exec -T hub curl -sf -H "X-Auth-Token: $_auth" http://jupiter-api:8080/vault 2>/dev/null || true)
 if printf '%s' "$_api" | grep -q "$FLAG_TASK08"; then
   _pass "api /vault returned the secret"
 else
@@ -139,8 +157,8 @@ else
 fi
 
 echo "== task09: XOR plaintext"
-_ct=$(docker compose exec -T hub curl -sf http://saturn-crypto/ct 2>/dev/null || true)
-_key=$(docker compose exec -T hub curl -sf http://saturn-crypto/key 2>/dev/null || true)
+_ct=$("${COMPOSE[@]}" exec -T hub curl -sf http://saturn-crypto/ct 2>/dev/null || true)
+_key=$("${COMPOSE[@]}" exec -T hub curl -sf http://saturn-crypto/key 2>/dev/null || true)
 _xored=$(python3 - "$_ct" "$_key" <<'PY' 2>/dev/null || true
 import sys
 try:
@@ -158,7 +176,7 @@ else
 fi
 
 echo "== task10: expected.sha256 matches computed digest"
-_expected_remote=$(docker compose exec -T hub curl -sf http://neptune-final/expected.sha256 2>/dev/null | tr -d '\r\n' || true)
+_expected_remote=$("${COMPOSE[@]}" exec -T hub curl -sf http://neptune-final/expected.sha256 2>/dev/null | tr -d '\r\n' || true)
 _computed=$(python3 - "$FLAG_TASK01" "$FLAG_TASK02" "$FLAG_TASK03" "$FLAG_TASK04" "$FLAG_TASK05" "$FLAG_TASK06" "$FLAG_TASK07" "$FLAG_TASK08" "$FLAG_TASK09" <<'PY' 2>/dev/null || true
 import hashlib, sys
 joined = "\n".join(sys.argv[1:])
@@ -172,34 +190,34 @@ else
 fi
 
 echo "== privilege separation: intern cannot read hub.env"
-if docker compose exec -T -u intern hub sh -c 'cat /etc/ctf/hub.env >/dev/null 2>&1 && echo LEAK || echo OK' 2>/dev/null | grep -q OK; then
+if "${COMPOSE[@]}" exec -T -u intern hub sh -c 'cat /etc/ctf/hub.env >/dev/null 2>&1 && echo LEAK || echo OK' 2>/dev/null | grep -q OK; then
   _pass "intern cannot read /etc/ctf/hub.env"
 else
   _fail "intern CAN read /etc/ctf/hub.env — privilege separation broken"
 fi
 
 echo "== ctf-verify helper rejects garbage"
-if docker compose exec -T -u intern hub /usr/local/bin/ctf-verify task01 "definitely-wrong-$$" >/dev/null 2>&1; then
+if "${COMPOSE[@]}" exec -T -u intern hub /usr/local/bin/ctf-verify task01 "definitely-wrong-$$" >/dev/null 2>&1; then
   _fail "ctf-verify accepted a wrong answer"
 else
   _pass "ctf-verify rejects wrong answer"
 fi
 
 echo "== ctf-verify helper accepts correct answer"
-if docker compose exec -T -u intern hub /usr/local/bin/ctf-verify task04 "$FLAG_TASK04" >/dev/null 2>&1; then
+if "${COMPOSE[@]}" exec -T -u intern hub /usr/local/bin/ctf-verify task04 "$FLAG_TASK04" >/dev/null 2>&1; then
   _pass "ctf-verify accepts correct task04 answer"
 else
   _fail "ctf-verify rejected the correct task04 answer"
 fi
 
 echo "== ink self-check"
-if docker compose exec -T -u intern hub node /opt/ctf-hub/dist/index.js --self-check >/dev/null 2>&1; then
+if "${COMPOSE[@]}" exec -T -u intern hub node /opt/ctf-hub/dist/index.js --self-check >/dev/null 2>&1; then
   _pass "ink --self-check"
 else
   _fail "ink --self-check failed"
 fi
 
-printf '\n==> smoke test: \033[32m%d passed\033[0m, \033[31m%d failed\033[0m\n' "$PASS" "$FAIL"
+printf '\n==> smoke test [%s]: \033[32m%d passed\033[0m, \033[31m%d failed\033[0m\n' "$INSTANCE" "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
