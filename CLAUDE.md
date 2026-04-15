@@ -4,20 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A one-click Docker Compose environment that spins up an interactive CTF for one
-IT intern. The intern SSHes into a "hub" container whose login shell is a
-React Ink TUI; the TUI walks them through 10 sequential tasks targeted at
-other containers on the same Docker network. Each spin-up regenerates all
-answers.
+A multi-instance Docker Compose environment that spins up an interactive CTF
+for one IT intern per instance. The intern SSHes into a "hub" container whose
+login shell is a React Ink TUI; the TUI walks them through 10 sequential tasks
+targeted at other containers on the same Docker network. Every spin-up
+regenerates all answers. Multiple instances can run side-by-side on one host,
+each as a separate Compose project with its own network, secrets, and host
+SSH port.
 
 ## Common commands
 
 ```bash
-./spin-up.sh                      # generate flags, build, start, print mentor password
-./spin-up.sh --fresh              # also regenerate secrets when hub.env already exists
-./tear-down.sh -y                 # stop + wipe volumes + clear secrets/
-./tear-down.sh -y --keep-state    # preserve intern progress volume
-./smoke-test.sh                   # end-to-end check (runs on host, exits non-zero on failure)
+./spin-up.sh alice                # flags → build → start → print mentor pw for instance "alice"
+./spin-up.sh bob --fresh          # second instance; auto-picks the next free SSH port
+./tear-down.sh alice -y           # scoped teardown (leaves other instances running)
+./tear-down.sh --all -y           # nuke every instance under secrets/
+./smoke-test.sh alice             # end-to-end check for one instance (host-side, non-zero on failure)
+
+# Instance name defaults to "default" if omitted:
+./spin-up.sh                      # == ./spin-up.sh default
+./smoke-test.sh                   # == ./smoke-test.sh default
 
 ssh -t intern@localhost -p 2222   # intern entrypoint; password: ctf
 ```
@@ -44,10 +50,12 @@ CTF_VERIFY_PATH=/bin/false node dist/index.js --self-check
 ## Architecture highlights
 
 **Randomization & chaining.** `scripts/generate-flags.sh` is the single source
-of randomness. It runs once per spin-up, writes `secrets/hub.env` (mode 0600,
-the full flag map) plus per-task env slices, and emits the mentor password on
-stdout for `spin-up.sh` to capture. Task 04's plaintext is generated first
-and deliberately reused: it's the input that derives the Task 06 DNS hostname
+of randomness. It takes the target secrets dir as its first argument (e.g.
+`scripts/generate-flags.sh secrets/alice`) and writes `<dir>/hub.env` (mode
+0600, the full flag map), per-task env slices, and `<dir>/override.yml` (the
+per-instance decoy containers). It emits the mentor password on stdout for
+`spin-up.sh` to capture. Task 04's plaintext is generated first and
+deliberately reused: it's the input that derives the Task 06 DNS hostname
 (`h-<sha256(plaintext)[0:8]>.internal.ctf`) and the Task 08 auth token. If
 you change one of these, update the others.
 
@@ -81,27 +89,37 @@ also runs as `intern`, so drop-to-shell is not an escalation path.
 an `entrypoint.sh` that starts with `set -euo pipefail`, validates required
 env vars with `: "${FLAG_TASKNN_FOO:?missing FLAG_TASKNN_FOO}"`, renders any
 templated data, and `exec`s its service in the foreground. Env vars are
-provided via `env_file: ./secrets/taskNN.env` in `docker-compose.yml`.
+provided via `env_file: ${CTF_SECRETS_DIR}/taskNN.env` in `docker-compose.yml`
+— `CTF_SECRETS_DIR` is set by `spin-up.sh` to `secrets/<instance>` so each
+Compose project reads its own flag slices.
 
-**Fixed IPs and hostnames.** `ctfnet` is `10.42.0.0/24` with hardcoded
-addresses (hub 10.42.0.10, mercury .20, mars-hop .22, venus .23, earth-logs .24,
-jupiter-api .25, saturn-crypto .26, neptune-final .27, decoys .30+). Task
-descriptions refer to hosts by name, so changing these requires updating
+**Multi-instance topology.** Each instance is a Compose project named
+`ctf-<instance>`, with a bridge network whose subnet Docker auto-allocates
+from its default address pool. Stable hostnames (`hub`, `mercury`, `mars-hop`,
+`venus`, `earth-logs`, `jupiter-api`, `saturn-crypto`, `neptune-final`, and
+each decoy) are declared as `networks.ctfnet.aliases` on their services;
+Docker's embedded DNS registers the aliases scoped to that network, so two
+instances can both have a `mercury` without conflict. There are no fixed IPs
+— `hub/entrypoint.sh` resolves `venus` at boot via `getent hosts` and prepends
+the result to `/etc/resolv.conf` so dig/nslookup hit the task06-dns container
+first. If you change one of the stable hostnames, update
 `hub/app/src/tasks/index.ts` and `smoke-test.sh` in lockstep.
 
-**State.** Single JSON at `/var/ctf/state/intern.json` on a named volume.
-Atomic write via temp+rename in `hub/app/src/state/progress.ts`. No locking;
-the architecture is one stack per intern.
+**State.** Single JSON at `/var/ctf/state/intern.json` on a named volume
+(`state`, automatically scoped per Compose project, so each instance has its
+own copy). Atomic write via temp+rename in `hub/app/src/state/progress.ts`.
 
 ## Things to watch when editing
 
 - `scripts/generate-flags.sh` order matters — Task 04 plaintext must be
-  generated before anything that depends on it.
-- Don't put answers in TypeScript sources. Only `secrets/hub.env` knows the
-  answers; the TUI asks the setuid helper.
+  generated before anything that depends on it. The script takes the target
+  secrets directory as its first arg; default is `secrets/default`.
+- Don't put answers in TypeScript sources. Only `secrets/<instance>/hub.env`
+  knows the answers; the TUI asks the setuid helper.
 - When adding a new task, update (in this order): `scripts/generate-flags.sh`
-  (flag + env slice), `docker-compose.yml` (service + env_file), a new
-  `tasks/taskNN-*/` directory, `hub/app/src/state/progress.ts` (extend
+  (flag + env slice — remember to write into `$SECRETS_DIR`), `docker-compose.yml`
+  (service + `env_file: ${CTF_SECRETS_DIR}/taskNN.env` + `networks.ctfnet.aliases`),
+  a new `tasks/taskNN-*/` directory, `hub/app/src/state/progress.ts` (extend
   `TaskId`), `hub/app/src/tasks/index.ts` (metadata), and `smoke-test.sh`
   (end-to-end check).
 - `FLAG_TASK10_EXPECTED` is the sha256 of `FLAG_TASK01..FLAG_TASK09` joined

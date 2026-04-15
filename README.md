@@ -16,37 +16,87 @@ for a comfortable-with-CLI intern; expect 4.5–5 h with realistic friction.
 - An SSH client that supports `-t` (PTY allocation) — including Windows OpenSSH,
   PuTTY, or the built-in Terminal on macOS/Linux
 
-## Quick start
+## Quick start — multi-instance
+
+Every CTF instance is a **named Compose project** with its own network, its
+own flags, and its own host SSH port. Run as many as your server's RAM allows.
 
 ```bash
-./spin-up.sh                 # generate flags, build, start, print mentor password
-ssh -t intern@localhost -p 2222   # password: ctf
-./tear-down.sh               # stop everything and wipe state + secrets
+./spin-up.sh alice           # first instance — auto-picks port 2222
+./spin-up.sh bob             # second instance — auto-picks port 2223
+ssh -t intern@localhost -p 2222   # alice's hub; password: ctf
+ssh -t intern@localhost -p 2223   # bob's hub;   password: ctf
+
+./tear-down.sh alice -y      # tear down just alice (bob keeps running)
+./tear-down.sh --all -y      # tear down every instance on this host
 ```
 
-`spin-up.sh` prints the mentor password **exactly once** at the end of its
-output. Save it immediately — it is not persisted in plaintext anywhere.
+If you omit the instance name, both scripts default to `default`:
+
+```bash
+./spin-up.sh                 # equivalent to ./spin-up.sh default
+./tear-down.sh               # tears down the "default" instance
+```
+
+`spin-up.sh` prints the mentor password for the instance **exactly once**
+at the end of its output. Save it immediately — it is not persisted in
+plaintext anywhere.
 
 Useful flags:
 
 | Command | Flag | Effect |
 | --- | --- | --- |
-| `spin-up.sh`  | `--fresh`         | Regenerate secrets even if `secrets/` already exists |
-| `tear-down.sh`| `--keep-state`    | Keep the `state` volume (preserves intern progress) |
-| `tear-down.sh`| `--keep-secrets`  | Keep `secrets/*.env` and `secrets/mentor.hash` |
+| `spin-up.sh`  | `--fresh`         | Regenerate secrets even if `secrets/<name>/hub.env` already exists |
+| `tear-down.sh`| `--all`           | Tear down every instance under `secrets/` |
+| `tear-down.sh`| `--keep-state`    | Keep the state volume (preserves intern progress) |
+| `tear-down.sh`| `--keep-secrets`  | Keep `secrets/<name>/` on disk |
 | `tear-down.sh`| `-y` / `--yes`    | Skip the confirmation prompt |
 
 Environment variables:
 
 | Name | Default | Purpose |
 | --- | --- | --- |
-| `CTF_SSH_PORT`        | `2222` | Host port mapped to the hub's sshd |
-| `CTF_MENTOR_PASSWORD` | (random) | Override the generated mentor password |
-| `CTF_ALLOW_RESET`     | `0`    | If `1`, enables the in-TUI reset key |
+| `CTF_SSH_PORT`        | first free ≥2222 | Force a specific host SSH port for this spin-up |
+| `CTF_MENTOR_PASSWORD` | (random)         | Override the generated mentor password |
+| `CTF_ALLOW_RESET`     | `0`              | If `1`, enables the in-TUI reset key |
+
+## Realistic concurrent-instance cap
+
+Each instance is ~11 containers (hub + 7 task services + 3–5 decoys) and
+idles at roughly **500 MB of RAM**. CPU is near-zero. Disk is dominated by
+the one-time image builds (~800 MB total), which are **shared across all
+instances** on the same host.
+
+RAM-bounded cap (leave ~25% headroom for the host):
+
+| Host RAM | Concurrent instances |
+|---------:|---------------------:|
+|   8 GB   |                ~13   |
+|  16 GB   |                ~26   |
+|  32 GB   |                ~53   |
+|  64 GB   |               ~106   |
+
+Docker auto-allocates a private subnet per instance from its default
+address pool. Out of the box that pool holds roughly 31 networks — plenty
+for small deployments. If you plan to run **more than ~20 instances
+simultaneously**, expand the pool in `/etc/docker/daemon.json`:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "10.200.0.0/16", "size": 24 }
+  ]
+}
+```
+
+Then `systemctl restart docker`. That reserves 256 `/24` subnets
+exclusively for Docker networks — more than enough to saturate any
+realistic RAM budget.
 
 ## Smoke test
 
-After a spin-up, run `./smoke-test.sh` from the host. It verifies:
+After a spin-up, run `./smoke-test.sh <name>` from the host (or just
+`./smoke-test.sh` for the default instance). It verifies:
 
 - all services are running
 - the hub can resolve every task container
@@ -111,11 +161,15 @@ host ──► ssh -p 2222 ──► ctf-hub ┬──► mercury      (task02/0
                                  └──► 3–5 decoy containers
 ```
 
-- **`ctfnet`**: bridge network, subnet `10.42.0.0/24`, fixed IPs per service.
-- **`secrets/`** (gitignored): written by `scripts/generate-flags.sh`.
-  `hub.env` is the authoritative flag map and is mounted into the hub as
-  `root:root 0600`. Per-task slices are mounted only into the containers
-  that need them.
+- **`ctfnet`**: one bridge network per instance, with a subnet that Docker
+  auto-allocates from its default address pool. Service hostnames
+  (`mercury`, `mars-hop`, ...) are registered as network aliases, so two
+  instances can both have a `mercury` without conflict — each resolves
+  locally inside its own network.
+- **`secrets/<instance>/`** (gitignored): written by
+  `scripts/generate-flags.sh` for each named instance. `hub.env` is the
+  authoritative flag map and is mounted into the hub as `root:root 0600`.
+  Per-task slices are mounted only into the containers that need them.
 - **Ink TUI** (`hub/app/`): TypeScript / React Ink 5 running as the login
   shell of user `intern`. Verifies answers by shelling out to the `ctf-verify`
   setuid helper; it never reads `hub.env` directly.
@@ -130,11 +184,9 @@ host ──► ssh -p 2222 ──► ctf-hub ┬──► mercury      (task02/0
   `mars-hop`, `venus`, `saturn-crypto`) are fixed in `docker-compose.yml` so
   later task descriptions can refer to them by name. Only the **decoy** set
   varies per instance — `scripts/generate-flags.sh` picks 3–5 names from a
-  moon/dwarf-planet pool and writes `docker-compose.override.yml` so compose
+  moon/dwarf-planet pool and writes `secrets/<name>/override.yml` so compose
   actually runs those containers. Task 01's answer is the decoy CSV, so it
   genuinely changes every spin-up.
-- **Single-user stack.** One `docker compose` stack serves one intern. Run one
-  copy per intern, each with a different `CTF_SSH_PORT`.
 - **SSH requires `-t`.** The hub login shell refuses to start without a PTY
   and prints a reconnect hint. This is primarily a Windows SSH reminder.
 - **Task 04 is honor-system.** The flag is accepted by anyone who submits the
@@ -148,9 +200,9 @@ host ──► ssh -p 2222 ──► ctf-hub ┬──► mercury      (task02/0
 ├── docker-compose.yml
 ├── spin-up.sh / tear-down.sh / smoke-test.sh
 ├── scripts/
-│   ├── generate-flags.sh        # single randomization pass; writes secrets/
+│   ├── generate-flags.sh        # single randomization pass; writes secrets/<name>/
 │   └── lib/random.sh            # hex, word, sentence, XOR helpers
-├── secrets/                     # gitignored — created at spin-up
+├── secrets/<instance>/          # gitignored — one subdir per named instance
 ├── hub/
 │   ├── Dockerfile               # multi-stage: builder (helpers + Ink) + runtime
 │   ├── entrypoint.sh            # host keys, resolv.conf, sshd -D
