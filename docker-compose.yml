@@ -29,15 +29,15 @@ services:
       - ${CTF_SECRETS_DIR}/mentor.hash:/etc/ctf/mentor.hash.src:ro
       - state:/var/ctf/state
     depends_on:
-      - task02-portscan
-      - task05-ssh-hop
-      - task06-dns
-      - task07-logs
-      - task08-api
-      - task09-crypto
-      - task10-final
+      - mercury
+      - mars-hop
+      - venus
+      - earth-logs
+      - jupiter-api
+      - saturn-crypto
+      - neptune-final
 
-  task02-portscan:
+  mercury:
     build: ./tasks/task02-portscan
     hostname: mercury
     env_file: ${CTF_SECRETS_DIR}/task02.env
@@ -48,7 +48,7 @@ services:
         aliases:
           - mercury
 
-  task05-ssh-hop:
+  mars-hop:
     build: ./tasks/task05-ssh-hop
     hostname: mars-hop
     env_file: ${CTF_SECRETS_DIR}/task05.env
@@ -59,7 +59,7 @@ services:
         aliases:
           - mars-hop
 
-  task06-dns:
+  venus:
     build: ./tasks/task06-dns
     hostname: venus
     env_file: ${CTF_SECRETS_DIR}/task06.env
@@ -70,7 +70,7 @@ services:
         aliases:
           - venus
 
-  task07-logs:
+  earth-logs:
     build: ./tasks/task07-logs
     hostname: earth-logs
     env_file: ${CTF_SECRETS_DIR}/task07.env
@@ -81,7 +81,7 @@ services:
         aliases:
           - earth-logs
 
-  task08-api:
+  jupiter-api:
     build: ./tasks/task08-api
     hostname: jupiter-api
     env_file: ${CTF_SECRETS_DIR}/task08.env
@@ -92,7 +92,7 @@ services:
         aliases:
           - jupiter-api
 
-  task09-crypto:
+  saturn-crypto:
     build: ./tasks/task09-crypto
     hostname: saturn-crypto
     env_file: ${CTF_SECRETS_DIR}/task09.env
@@ -103,7 +103,7 @@ services:
         aliases:
           - saturn-crypto
 
-  task10-final:
+  neptune-final:
     build: ./tasks/task10-final
     hostname: neptune-final
     env_file: ${CTF_SECRETS_DIR}/task10.env

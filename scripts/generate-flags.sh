@@ -186,7 +186,7 @@ _override="$SECRETS_DIR/override.yml"
   IFS=',' read -r -a _decoy_arr <<< "$DECOY_NAMES"
   for _d in "${_decoy_arr[@]}"; do
     cat <<YML
-  decoy-${_d}:
+  ${_d}:
     image: alpine:3.19
     hostname: ${_d}
     command: ["sleep", "infinity"]
