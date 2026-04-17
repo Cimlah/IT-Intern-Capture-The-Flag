@@ -109,8 +109,9 @@ The script exits non-zero on any failure.
 
 ## The tasks
 
-Ten sequential tasks, unlocked one at a time. The intern can see locked task
-titles but not their descriptions.
+Ten sequential tasks, unlocked one at a time. The intern sees locked task
+titles but not their descriptions. Total wall-clock budget is **240 minutes**
+(4 hours); expect 4.5–5 h with realistic friction.
 
 | # | Title | Focus | Est. |
 | - | ----- | ----- | ---- |
@@ -125,10 +126,99 @@ titles but not their descriptions.
 | 9 | One-time what?         | XOR crypto                     | 35 m |
 |10 | Prove it               | sha256 of all prior flags      | 40 m |
 
-**Flag chaining.** Task 04's plaintext is deliberately reused: it is the input
-that generates the Task 06 DNS hostname and the Task 08 auth token. Blowing
-through Task 04 with `base64 -d` is detectable by the mentor because interns
-are required to save their hand-written decoder to `~/solutions/task04.*`.
+### Task details
+
+#### 1. Who's on the wire? *(15 min)*
+
+The intern has just landed on the hub. Other hosts exist on the private
+Docker network — seven are **targets** (`mercury`, `venus`, `earth-logs`,
+`mars-hop`, `jupiter-api`, `saturn-crypto`, `neptune-final`) and 3–5 are
+randomized **decoys** named after moons and dwarf planets. The intern must
+ping-sweep the subnet, reverse-resolve the live hosts, subtract the target
+list, and submit the sorted CSV of decoy hostnames. The decoy set changes on
+every spin-up, so this answer is unique per instance.
+Tools: `ip`, `nmap -sn`, `getent hosts`, `dig -x`.
+
+#### 2. Find the hidden door *(15 min)*
+
+Host `mercury` runs an HTTP server on a single, randomized high port
+(1024–65000, avoiding 22/2222). The intern scans all 65535 TCP ports and
+submits the one open integer.
+Tools: `nmap -p-`, `nc -zv`.
+
+#### 3. What did it say? *(10 min)*
+
+Fetch `http://mercury:<port>/` and submit the base64 string the server
+returns — verbatim, including any `=` padding. The response body is a single
+line so the intern can paste it directly into the TUI.
+Tools: `curl`, `wget`.
+
+#### 4. Crack the shell *(20 min)* — **honor system**
+
+The intern writes their **own** base64 decoder (Python, Node, bash, …) to
+decode the Task 3 string, and saves the script to `~/solutions/task04.<ext>`
+for mentor review. Submit the decoded plaintext (a pronounceable
+`word-1234`-style token). Using `base64 -d` defeats the exercise — the
+mentor checks the saved script.
+Tools: `python3`, `node`, `bash`, `xxd`.
+
+> **Flag chaining.** This plaintext is reused as (a) the derivation input
+> for the Task 6 DNS hostname and (b) the Task 8 auth token. Get Task 4
+> right and two later tasks fall out of it; get it wrong and neither
+> works.
+
+#### 5. Jump to the next box *(25 min)*
+
+Host `mars-hop` runs sshd with a user `pivot`. The password is hidden as a
+plain file at `http://mercury:<port>/hop.txt`. The intern fetches the
+password, SSHes in with `ssh pivot@mars-hop`, reads `/home/pivot/flag.txt`,
+and submits its contents.
+Tools: `curl`, `ssh`, `cat`.
+
+#### 6. What's in a name? *(25 min)*
+
+Host `venus` runs dnsmasq serving the `internal.ctf` zone. The DNS name the
+intern needs is **derived from the Task 4 plaintext**:
+
+1. `sha256(plaintext)` → 64 hex chars
+2. take the first 8 hex chars
+3. build `h-<those-8-chars>.internal.ctf`
+
+`dig TXT <that-name>` returns the flag as the TXT record value.
+Tools: `sha256sum`, `dig`, `nslookup`.
+
+#### 7. Needle in a haystack *(25 min)*
+
+Host `earth-logs` serves a synthetic Apache-style access log at
+`http://earth-logs/access.log` with several hundred lines of noise. Exactly
+one entry has HTTP status 500, and that line also contains a transaction ID
+`TX-XXXXXX`. The intern submits the full transaction ID.
+Tools: `curl`, `grep`, `awk`, `sed`.
+
+#### 8. The API is the map *(30 min)*
+
+Host `jupiter-api` runs a small Python JSON API on port 8080. `GET /` lists
+endpoints. Most return boring JSON; one endpoint requires an `X-Auth-Token`
+header whose value is the **Task 4 plaintext**. Authenticate, find the
+endpoint that returns a `secret` field, submit its value.
+Tools: `curl`, `jq`.
+
+#### 9. One-time what? *(35 min)*
+
+Host `saturn-crypto` serves two hex-encoded files of equal length:
+`http://saturn-crypto/ct` (ciphertext) and `http://saturn-crypto/key`. XOR
+them byte-for-byte to recover an ASCII plaintext sentence. Submit the
+plaintext verbatim.
+Tools: `curl`, `python3`, `xxd`.
+
+#### 10. Prove it *(40 min)*
+
+Write a program that (a) concatenates all nine previous flags in order
+joined by `\n` (no trailing newline), (b) computes sha256, (c) prints the
+lowercase hex digest. Host `neptune-final` exposes the expected digest at
+`http://neptune-final/expected.sha256` for sanity checking. Submit the
+hash.
+Tools: `python3`, `node`, `sha256sum`, `curl`.
 
 ## Mentor workflow
 
@@ -151,21 +241,28 @@ instance (this also rotates every flag).
 ## Architecture
 
 ```
-host ──► ssh -p 2222 ──► ctf-hub ┬──► mercury      (task02/03/05 http)
-                                 ├──► mars-hop   (task05 ssh)
-                                 ├──► venus         (task06 dns)
-                                 ├──► earth-logs    (task07 logs)
-                                 ├──► jupiter-api   (task08 api)
-                                 ├──► saturn-crypto (task09 ct/key)
-                                 ├──► neptune-final (task10 expected hash)
-                                 └──► 3–5 decoy containers
+host ──► ssh -p <ssh_port> ──► hub ┬──► mercury        (task02/03/05 http)
+                                   ├──► mars-hop       (task05 ssh)
+                                   ├──► venus          (task06 dns)
+                                   ├──► earth-logs     (task07 logs)
+                                   ├──► jupiter-api    (task08 api)
+                                   ├──► saturn-crypto  (task09 ct/key)
+                                   ├──► neptune-final  (task10 expected hash)
+                                   └──► 3–5 decoy containers
 ```
 
 - **`ctfnet`**: one bridge network per instance, with a subnet that Docker
-  auto-allocates from its default address pool. Service hostnames
-  (`mercury`, `mars-hop`, ...) are registered as network aliases, so two
-  instances can both have a `mercury` without conflict — each resolves
-  locally inside its own network.
+  auto-allocates from its default address pool. Compose service keys are
+  the themed hostnames themselves (`mercury`, `mars-hop`, …) and the
+  matching `networks.ctfnet.aliases` register the same names inside Docker
+  DNS — two instances can both have a `mercury` without conflict because
+  each resolves only inside its own network. Decoys are plain service
+  names too (`pluto`, `titan`, …), so `nmap` cannot distinguish them from
+  real services by name pattern.
+- **Restart policy.** Every service (hub, task containers, decoys) runs
+  with `restart: unless-stopped`. After `./spin-up.sh` the stack will
+  auto-start on host boot and recover from container crashes, but will
+  stay down after `./tear-down.sh` or an explicit `docker compose stop`.
 - **`secrets/<instance>/`** (gitignored): written by
   `scripts/generate-flags.sh` for each named instance. `hub.env` is the
   authoritative flag map and is mounted into the hub as `root:root 0600`.
