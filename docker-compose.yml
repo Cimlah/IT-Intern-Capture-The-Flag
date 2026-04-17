@@ -15,6 +15,7 @@ services:
   hub:
     build: ./hub
     hostname: hub
+    restart: unless-stopped
     ports:
       - "${CTF_SSH_PORT:-2222}:22"
     networks:
@@ -40,6 +41,7 @@ services:
   mercury:
     build: ./tasks/task02-portscan
     hostname: mercury
+    restart: unless-stopped
     env_file: ${CTF_SECRETS_DIR}/task02.env
     environment:
       <<: *no-proxy
@@ -51,6 +53,7 @@ services:
   mars-hop:
     build: ./tasks/task05-ssh-hop
     hostname: mars-hop
+    restart: unless-stopped
     env_file: ${CTF_SECRETS_DIR}/task05.env
     environment:
       <<: *no-proxy
@@ -62,6 +65,7 @@ services:
   venus:
     build: ./tasks/task06-dns
     hostname: venus
+    restart: unless-stopped
     env_file: ${CTF_SECRETS_DIR}/task06.env
     environment:
       <<: *no-proxy
@@ -73,6 +77,7 @@ services:
   earth-logs:
     build: ./tasks/task07-logs
     hostname: earth-logs
+    restart: unless-stopped
     env_file: ${CTF_SECRETS_DIR}/task07.env
     environment:
       <<: *no-proxy
@@ -84,6 +89,7 @@ services:
   jupiter-api:
     build: ./tasks/task08-api
     hostname: jupiter-api
+    restart: unless-stopped
     env_file: ${CTF_SECRETS_DIR}/task08.env
     environment:
       <<: *no-proxy
@@ -95,6 +101,7 @@ services:
   saturn-crypto:
     build: ./tasks/task09-crypto
     hostname: saturn-crypto
+    restart: unless-stopped
     env_file: ${CTF_SECRETS_DIR}/task09.env
     environment:
       <<: *no-proxy
@@ -106,6 +113,7 @@ services:
   neptune-final:
     build: ./tasks/task10-final
     hostname: neptune-final
+    restart: unless-stopped
     env_file: ${CTF_SECRETS_DIR}/task10.env
     environment:
       <<: *no-proxy

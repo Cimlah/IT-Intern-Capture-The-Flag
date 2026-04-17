@@ -189,6 +189,7 @@ _override="$SECRETS_DIR/override.yml"
   ${_d}:
     image: alpine:3.19
     hostname: ${_d}
+    restart: unless-stopped
     command: ["sleep", "infinity"]
     networks:
       ctfnet:
